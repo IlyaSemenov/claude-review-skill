@@ -1,0 +1,6 @@
+interface:
+  display_name: "Claude Review"
+  short_description: "Review plans, diffs, or code using Claude Code"
+  default_prompt: "Use $claude-review to run a second-eye review of this plan, diff, or code artifact."
+policy:
+  allow_implicit_invocation: false
