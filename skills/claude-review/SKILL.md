@@ -56,6 +56,8 @@ If the helper returns `{"kind":"operational_error","reason":"auth_unavailable",.
    Accept useful criticism and update the artifact.
    Reject criticism that is mistaken, overspecified, or based on a wrong assumption.
    Do not defer to Claude just because it sounds confident.
+   After each round, print a short progress update to the user. Format: one line per issue Claude raised this round, in the form `<short title> — accepted/fixed` or `<short title> — rejected: <one-line reason>`. Keep titles short; do not paste full rationales. If Claude raised no issues this round, say so on a single line.
+   Internally, track every issue across rounds by its `id` so the final report can reconcile outcomes — the `id` is for your bookkeeping only and should not appear in user-facing lines.
 5. When you disagree, prepare a response bundle for the next round.
    Include only:
    - accepted points and what changed
@@ -66,10 +68,11 @@ If the helper returns `{"kind":"operational_error","reason":"auth_unavailable",.
    - Claude approves or has no actionable issues
    - the same disagreement repeats after a substantive rebuttal
    - total iterations reaches 10
-7. End with a short report.
-   Include:
-   - what changed from the original artifact
-   - which disagreements remain unresolved at the end, if any
+7. End with a final report to the user.
+   Collect every issue Claude raised across all rounds, deduplicated by `id`, and group them. Use one line per issue (short title + one-line outcome note); do not include the raw `id` in user-facing lines. Omit any group that is empty — do not emit a placeholder.
+   - **Fixed** — issues you accepted at any point (immediately or after discussion) and applied to the artifact.
+   - **Rejected, Claude withdrew** — issues you initially disagreed with and Claude dropped after your rebuttal (they did not resurface in later rounds).
+   - **Unresolved** — issues where Claude still insisted and you still disagreed when the loop ended. These are what the user needs to judge.
 
 If the helper returns `{"kind":"operational_error", ...}`, do not start or continue iterations. Report that review was not possible, show the reason and message, and stop.
 

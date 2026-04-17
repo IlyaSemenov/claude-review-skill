@@ -43,7 +43,8 @@ Between rounds, the calling agent:
 - reuses the same Claude conversation by passing `--resume-session-id` so the discussion keeps its context
 - repeats only while another round is still likely to improve the review or clarify a real disagreement
 - stops when Claude approves, when the remaining disagreement is clear enough that another round is not worth it, or when the configured round limit is reached
-- reports back to the user a short summary of what changed and any unresolved disagreement for the user to judge
+- after each round, prints a one-line-per-issue progress update (what Claude raised and whether the agent accepted or rejected it)
+- at the end, reports back to the user a final summary of all issues raised across rounds, grouped into what was fixed, what was rejected and dropped by Claude, and what remains unresolved for the user to judge
 
 By default, the agent sends review instructions through standard input. When the review refers to existing project files, the agent points Claude at those files directly.
 When the review subject is large but not already materialized as a project file, the skill can place it in a temporary file and point Claude at that path instead.
