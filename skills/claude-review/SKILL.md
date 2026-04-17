@@ -20,7 +20,9 @@ Use Claude as a peer reviewer, not as the authority. The goal is to surface blin
    For project files in the current working directory, prefer path-based review input such as `Review src/auth.py lines 40-110`.
    For non-materialized plans or discussions, either pipe the text directly or, for larger subjects, materialize them to `/tmp/...md` and refer to the path instead.
    For round 2 and later, append your response bundle after an `=== CLAUDE_REVIEW_AGENT_RESPONSE ===` marker on its own line in the same stdin payload.
-3. Run the helper script:
+3. Run the helper script.
+
+Round 1 — only the review input, no marker:
 
 ```bash
 cat <<'EOF' | python3 scripts/claude_review.py \
@@ -30,8 +32,21 @@ Review docs/plan.md and src/reviewer.py. Focus on missing decisions and retry be
 EOF
 ```
 
-On round 1, send only the review input. Do not include a `=== CLAUDE_REVIEW_AGENT_RESPONSE ===` section.
-For later rounds, pass `--resume-session-id` and append `=== CLAUDE_REVIEW_AGENT_RESPONSE ===` followed by your response bundle to the same stdin payload.
+Round 2+ — resume the session and append your response bundle after the marker on its own line:
+
+```bash
+cat <<'EOF' | python3 scripts/claude_review.py \
+  --iteration 2 \
+  --max-iterations 10 \
+  --resume-session-id "$SESSION_ID"
+Review docs/plan.md and src/reviewer.py. Focus on missing decisions and retry behavior.
+=== CLAUDE_REVIEW_AGENT_RESPONSE ===
+Accepted: added retry-with-backoff to publish() (issue r1).
+Rejected: issue r2 — the caller already holds the lock, so the extra mutex is redundant.
+EOF
+```
+
+`$SESSION_ID` is the `session_id` from the previous round's JSON output.
 If your stdin references files outside the current working directory, pass `--add-dir` for each extra readable directory, for example `--add-dir /tmp`.
 The helper defaults to a 600-second Claude subprocess timeout. For unusually large reviews, pass `--timeout-seconds` to raise or lower that bound.
 
