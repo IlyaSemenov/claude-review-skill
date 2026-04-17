@@ -9,6 +9,7 @@ import argparse
 import json
 import subprocess
 import sys
+import time
 from typing import Any
 
 RESPONSE_SCHEMA = {
@@ -33,20 +34,20 @@ RESPONSE_SCHEMA = {
                 "additionalProperties": False,
                 "required": ["id", "title", "severity", "recommendation", "rationale"],
                 "properties": {
-                    "id": {"type": "string"},
-                    "title": {"type": "string"},
+                    "id": {"type": "string", "minLength": 1},
+                    "title": {"type": "string", "minLength": 1},
                     "severity": {
                         "type": "string",
                         "enum": ["low", "medium", "high"],
                     },
-                    "recommendation": {"type": "string"},
-                    "rationale": {"type": "string"},
+                    "recommendation": {"type": "string", "minLength": 1},
+                    "rationale": {"type": "string", "minLength": 1},
                 },
             },
         },
         "open_questions": {
             "type": "array",
-            "items": {"type": "string"},
+            "items": {"type": "string", "minLength": 1},
         },
         "loop_signal": {"type": "boolean"},
         "approval_reason": {"type": "string"},
@@ -66,6 +67,7 @@ class OperationalError(Exception):
         super().__init__(message)
         self.reason = reason
         self.message = message
+
 
 def parse_stdin_payload(payload: str) -> tuple[str, str | None]:
     stripped = payload.strip()
@@ -143,62 +145,36 @@ def build_prompt(
     return "\n".join(sections) + "\n"
 
 
-def extract_text_from_content_list(items: list[Any]) -> str | None:
-    text_parts: list[str] = []
-    for item in items:
-        if isinstance(item, dict):
-            if isinstance(item.get("text"), str):
-                text_parts.append(item["text"])
-            elif item.get("type") == "text" and isinstance(item.get("content"), str):
-                text_parts.append(item["content"])
-    if not text_parts:
-        return None
-    return "\n".join(text_parts)
-
-
 def looks_like_review_payload(value: Any) -> bool:
     return isinstance(value, dict) and all(key in value for key in OUTPUT_KEYS)
 
 
-def unwrap_payload(value: Any) -> Any:
-    if looks_like_review_payload(value):
-        return value
-
-    if isinstance(value, dict):
-        for key in ("structured_output", "result", "response", "output", "message"):
-            if key in value:
-                candidate = unwrap_payload(value[key])
-                if candidate is not None:
-                    return candidate
-        if "content" in value:
-            candidate = unwrap_payload(value["content"])
-            if candidate is not None:
-                return candidate
-        if "messages" in value and isinstance(value["messages"], list):
-            candidate = unwrap_payload(value["messages"])
-            if candidate is not None:
-                return candidate
-
-    if isinstance(value, list):
-        text_blob = extract_text_from_content_list(value)
-        if text_blob is not None:
-            return unwrap_payload(text_blob)
-        for item in value:
-            candidate = unwrap_payload(item)
-            if candidate is not None:
-                return candidate
-
-    if isinstance(value, str):
-        stripped = value.strip()
-        if not stripped:
-            return None
-        try:
-            parsed = json.loads(stripped)
-        except json.JSONDecodeError:
-            return None
-        return unwrap_payload(parsed)
-
+def extract_session_id(data: Any) -> str | None:
+    if not isinstance(data, dict):
+        return None
+    value = data.get("session_id")
+    if isinstance(value, str) and value.strip():
+        return value.strip()
     return None
+
+
+def extract_review_payload(data: Any) -> dict[str, Any]:
+    if not isinstance(data, dict):
+        raise ValueError("claude output is not a JSON object")
+    if "result" not in data:
+        raise ValueError("claude output is missing the 'result' field")
+    result = data["result"]
+    if isinstance(result, str):
+        stripped = result.strip()
+        if not stripped:
+            raise ValueError("claude output 'result' is empty")
+        try:
+            result = json.loads(stripped)
+        except json.JSONDecodeError as exc:
+            raise ValueError(f"claude output 'result' is not valid JSON: {exc}") from exc
+    if not isinstance(result, dict):
+        raise ValueError("claude output 'result' is not a JSON object")
+    return result
 
 
 def normalize_review(payload: Any) -> dict[str, Any]:
@@ -254,23 +230,6 @@ def normalize_review(payload: Any) -> dict[str, Any]:
     }
 
 
-def extract_session_id(value: Any) -> str | None:
-    if isinstance(value, dict):
-        session_id = value.get("session_id")
-        if isinstance(session_id, str) and session_id.strip():
-            return session_id.strip()
-        for nested in value.values():
-            candidate = extract_session_id(nested)
-            if candidate:
-                return candidate
-    elif isinstance(value, list):
-        for item in value:
-            candidate = extract_session_id(item)
-            if candidate:
-                return candidate
-    return None
-
-
 def extract_error_text(text: str) -> str:
     stripped = text.strip()
     if not stripped:
@@ -298,23 +257,13 @@ def build_repair_prompt(parse_error: str) -> str:
     ) + "\n"
 
 
-def make_operational_error(reason: str, message: str) -> OperationalError:
-    return OperationalError(reason=reason, message=message)
-
-
 def classify_claude_failure(completed: subprocess.CompletedProcess[str]) -> OperationalError:
     stderr_text = extract_error_text(completed.stderr)
     stdout_text = extract_error_text(completed.stdout)
     message = stderr_text or stdout_text or "unknown error"
     if "Not logged in" in message:
-        return make_operational_error(
-            "auth_unavailable",
-            message,
-        )
-    return make_operational_error(
-        "claude_cli_failed",
-        message,
-    )
+        return OperationalError("auth_unavailable", message)
+    return OperationalError("claude_cli_failed", message)
 
 
 def run_claude(
@@ -354,37 +303,47 @@ def request_review(
     resume_session_id: str | None,
     add_dirs: list[str],
 ) -> dict[str, Any]:
+    deadline = time.monotonic() + timeout_seconds
     last_raw_output = ""
     last_error = ""
     current_prompt = prompt
     current_resume_session_id = resume_session_id
+
     for attempt in range(1, MAX_PARSE_ATTEMPTS + 1):
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise subprocess.TimeoutExpired(cmd="claude", timeout=timeout_seconds)
+
         raw_output = run_claude(
-            current_prompt, timeout_seconds, current_resume_session_id, add_dirs
+            current_prompt,
+            max(1, int(remaining)),
+            current_resume_session_id,
+            add_dirs,
         )
         last_raw_output = raw_output
-        parsed: Any | None = None
+
+        data: Any = None
         try:
-            parsed = json.loads(raw_output)
-            payload = unwrap_payload(parsed)
-            if payload is None:
-                raise ValueError("unable to locate structured review payload in Claude output")
+            data = json.loads(raw_output)
+            payload = extract_review_payload(data)
             review = normalize_review(payload)
-            session_id = extract_session_id(parsed)
+            session_id = extract_session_id(data)
             if session_id:
                 review["session_id"] = session_id
             return review
         except (json.JSONDecodeError, ValueError) as exc:
             last_error = str(exc)
-            if attempt == MAX_PARSE_ATTEMPTS:
-                break
-            followup_session_id = None
-            if parsed is not None:
-                followup_session_id = extract_session_id(parsed)
-            if not followup_session_id and not current_resume_session_id:
-                break
-            current_resume_session_id = followup_session_id or current_resume_session_id
-            current_prompt = build_repair_prompt(last_error)
+
+        if attempt == MAX_PARSE_ATTEMPTS:
+            break
+
+        followup_session_id = extract_session_id(data) if data is not None else None
+        resume_for_retry = followup_session_id or current_resume_session_id
+        if not resume_for_retry:
+            break
+        current_resume_session_id = resume_for_retry
+        current_prompt = build_repair_prompt(last_error)
+
     raise RuntimeError(
         "Claude returned malformed structured output after "
         f"{MAX_PARSE_ATTEMPTS} attempts: {last_error}\nRaw output:\n{last_raw_output}"
@@ -403,17 +362,17 @@ def parse_args() -> argparse.Namespace:
 
 def validate_args(args: argparse.Namespace) -> None:
     if args.iteration < 1:
-        raise make_operational_error("invalid_input", "--iteration must be at least 1")
+        raise OperationalError("invalid_input", "--iteration must be at least 1")
     if args.max_iterations < 1:
-        raise make_operational_error("invalid_input", "--max-iterations must be at least 1")
+        raise OperationalError("invalid_input", "--max-iterations must be at least 1")
     if args.iteration > args.max_iterations:
-        raise make_operational_error(
+        raise OperationalError(
             "invalid_input", "--iteration cannot exceed --max-iterations"
         )
     if args.timeout_seconds < 1:
-        raise make_operational_error("invalid_input", "--timeout-seconds must be at least 1")
+        raise OperationalError("invalid_input", "--timeout-seconds must be at least 1")
     if args.iteration > 1 and not args.resume_session_id:
-        raise make_operational_error(
+        raise OperationalError(
             "invalid_input", "iteration > 1 requires --resume-session-id"
         )
 
@@ -442,11 +401,11 @@ def main() -> int:
     try:
         review_input, agent_response = parse_stdin_payload(raw_input)
     except ValueError as exc:
-        return emit_operational_error(make_operational_error("invalid_input", str(exc)))
+        return emit_operational_error(OperationalError("invalid_input", str(exc)))
 
     if args.iteration > 1 and agent_response is None:
         return emit_operational_error(
-            make_operational_error(
+            OperationalError(
                 "invalid_input",
                 f"iteration > 1 requires an {AGENT_RESPONSE_MARKER} section in stdin.",
             )
@@ -465,18 +424,16 @@ def main() -> int:
         )
     except OperationalError as exc:
         return emit_operational_error(exc)
-    except subprocess.TimeoutExpired as exc:
+    except subprocess.TimeoutExpired:
         return emit_operational_error(
-            make_operational_error(
+            OperationalError(
                 "timeout",
                 f"Claude review exceeded the configured timeout of {args.timeout_seconds} seconds.",
             ),
             timeout_seconds=args.timeout_seconds,
         )
     except RuntimeError as exc:
-        return emit_operational_error(
-            make_operational_error("claude_cli_failed", str(exc))
-        )
+        return emit_operational_error(OperationalError("claude_cli_failed", str(exc)))
 
     json.dump(review, sys.stdout, indent=2)
     sys.stdout.write("\n")

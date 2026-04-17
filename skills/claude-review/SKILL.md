@@ -48,7 +48,7 @@ EOF
 
 `$SESSION_ID` is the `session_id` from the previous round's JSON output.
 If your stdin references files outside the current working directory, pass `--add-dir` for each extra readable directory, for example `--add-dir /tmp`.
-The helper defaults to a 600-second Claude subprocess timeout. For unusually large reviews, pass `--timeout-seconds` to raise or lower that bound.
+The helper defaults to a 600-second wall-clock budget for the whole round (including any JSON-repair retry). For unusually large reviews, pass `--timeout-seconds` to raise or lower that bound.
 
 If the helper returns `{"kind":"operational_error","reason":"auth_unavailable",...}`, do not assume the user is actually logged out. In sandboxed environments, treat sandbox isolation as the likely cause and rerun the helper command with escalated execution before concluding that Claude authentication is unavailable.
 
