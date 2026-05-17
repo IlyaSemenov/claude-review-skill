@@ -196,35 +196,20 @@ class TestNormalizeReview:
 
 
 class TestExtractReviewPayload:
-    def test_result_as_object(self):
-        data = {"session_id": "s1", "result": {"verdict": "approve"}}
-        assert extract_review_payload(data) == {"verdict": "approve"}
+    def test_structured_output_extracted(self):
+        payload = {"verdict": "approve"}
+        data = {"type": "result", "result": "", "session_id": "s1", "structured_output": payload}
+        assert extract_review_payload(data) == payload
 
-    def test_result_as_json_string(self):
-        data = {"session_id": "s1", "result": '{"verdict": "approve"}'}
-        assert extract_review_payload(data) == {"verdict": "approve"}
+    def test_structured_output_missing_raises(self):
+        with pytest.raises(ValueError, match="structured_output"):
+            extract_review_payload({"session_id": "s1", "result": ""})
 
-    def test_result_as_json_string_with_surrounding_whitespace(self):
-        data = {"session_id": "s1", "result": '  {"verdict": "approve"}  '}
-        assert extract_review_payload(data) == {"verdict": "approve"}
+    def test_structured_output_non_dict_raises(self):
+        with pytest.raises(ValueError, match="structured_output"):
+            extract_review_payload({"session_id": "s1", "structured_output": None})
 
-    def test_missing_result(self):
-        with pytest.raises(ValueError, match="'result'"):
-            extract_review_payload({"session_id": "s1"})
-
-    def test_result_empty_string(self):
-        with pytest.raises(ValueError, match="empty"):
-            extract_review_payload({"session_id": "s1", "result": "   "})
-
-    def test_result_invalid_json(self):
-        with pytest.raises(ValueError, match="not valid JSON"):
-            extract_review_payload({"session_id": "s1", "result": "not json"})
-
-    def test_result_not_object(self):
-        with pytest.raises(ValueError, match="not a JSON object"):
-            extract_review_payload({"session_id": "s1", "result": "42"})
-
-    def test_top_level_not_dict(self):
+    def test_top_level_not_dict_raises(self):
         with pytest.raises(ValueError, match="not a JSON object"):
             extract_review_payload([1, 2, 3])
 

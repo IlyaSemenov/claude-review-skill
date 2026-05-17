@@ -161,20 +161,10 @@ def extract_session_id(data: Any) -> str | None:
 def extract_review_payload(data: Any) -> dict[str, Any]:
     if not isinstance(data, dict):
         raise ValueError("claude output is not a JSON object")
-    if "result" not in data:
-        raise ValueError("claude output is missing the 'result' field")
-    result = data["result"]
-    if isinstance(result, str):
-        stripped = result.strip()
-        if not stripped:
-            raise ValueError("claude output 'result' is empty")
-        try:
-            result = json.loads(stripped)
-        except json.JSONDecodeError as exc:
-            raise ValueError(f"claude output 'result' is not valid JSON: {exc}") from exc
-    if not isinstance(result, dict):
-        raise ValueError("claude output 'result' is not a JSON object")
-    return result
+    structured_output = data.get("structured_output")
+    if not isinstance(structured_output, dict):
+        raise ValueError("claude output is missing 'structured_output'")
+    return structured_output
 
 
 def normalize_review(payload: Any) -> dict[str, Any]:
