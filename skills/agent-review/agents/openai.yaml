@@ -1,0 +1,6 @@
+interface:
+  display_name: "Agent Review"
+  short_description: "Review plans, diffs, or code using a peer CLI agent (Claude Code, Codex, ...)"
+  default_prompt: "Use $agent-review to run a second-eye review of this plan, diff, or code artifact."
+policy:
+  allow_implicit_invocation: false

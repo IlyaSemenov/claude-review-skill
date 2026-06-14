@@ -3,6 +3,6 @@
 ## Commands
 
 ```bash
-cd skills/claude-review
+cd skills/agent-review
 uv run --with pytest python -m pytest tests/ -v
 ```

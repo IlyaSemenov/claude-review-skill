@@ -1,17 +1,14 @@
-import json
-
 import pytest
 
-from claude_review import (
+from adapters import AgentInvocation, AgentStreamError, OperationalError
+from agent_review import (
     AGENT_RESPONSE_MARKER,
     build_prompt,
     build_repair_prompt,
-    extract_error_text,
-    extract_review_payload,
-    extract_session_id,
     looks_like_review_payload,
     normalize_review,
     parse_stdin_payload,
+    request_review,
 )
 
 
@@ -195,66 +192,57 @@ class TestNormalizeReview:
         assert result["open_questions"] == ["one", "two"]
 
 
-class TestExtractReviewPayload:
-    def test_structured_output_extracted(self):
-        payload = {"verdict": "approve"}
-        data = {"type": "result", "result": "", "session_id": "s1", "structured_output": payload}
-        assert extract_review_payload(data) == payload
-
-    def test_structured_output_missing_raises(self):
-        with pytest.raises(ValueError, match="structured_output"):
-            extract_review_payload({"session_id": "s1", "result": ""})
-
-    def test_structured_output_non_dict_raises(self):
-        with pytest.raises(ValueError, match="structured_output"):
-            extract_review_payload({"session_id": "s1", "structured_output": None})
-
-    def test_top_level_not_dict_raises(self):
-        with pytest.raises(ValueError, match="not a JSON object"):
-            extract_review_payload([1, 2, 3])
-
-
-class TestExtractSessionId:
-    def test_present(self):
-        assert extract_session_id({"session_id": "abc"}) == "abc"
-
-    def test_stripped(self):
-        assert extract_session_id({"session_id": "  abc  "}) == "abc"
-
-    def test_missing(self):
-        assert extract_session_id({}) is None
-
-    def test_empty_string(self):
-        assert extract_session_id({"session_id": ""}) is None
-
-    def test_non_string(self):
-        assert extract_session_id({"session_id": 123}) is None
-
-    def test_non_dict(self):
-        assert extract_session_id("abc") is None
-        assert extract_session_id(None) is None
-
-
-class TestExtractErrorText:
-    def test_plain_text(self):
-        assert extract_error_text("boom\n") == "boom"
-
-    def test_empty(self):
-        assert extract_error_text("  \n") == ""
-
-    def test_json_with_error_key(self):
-        assert extract_error_text(json.dumps({"error": "auth failed"})) == "auth failed"
-
-    def test_json_with_result_key(self):
-        assert extract_error_text(json.dumps({"result": "explained"})) == "explained"
-
-    def test_json_without_known_keys_falls_back_to_raw(self):
-        raw = json.dumps({"other": "thing"})
-        assert extract_error_text(raw) == raw
-
-
 class TestBuildRepairPrompt:
     def test_includes_error(self):
         out = build_repair_prompt("bad verdict")
         assert "bad verdict" in out
         assert "valid JSON only" in out
+
+
+class _StreamFailureAgent:
+    """Fake adapter that exits 0 but reports a failure in its stream."""
+
+    name = "fake"
+
+    def __init__(self):
+        self.payload_calls = 0
+
+    def build_command(self, *, schema, resume_session_id, add_dirs):
+        return AgentInvocation(["true"])
+
+    def extract_session_id(self, stdout):
+        return "sid-1"
+
+    def extract_payload(self, stdout):
+        self.payload_calls += 1
+        raise AgentStreamError("401 Unauthorized")
+
+    def classify_failure(self, completed):
+        return OperationalError("auth_unavailable", "401 Unauthorized")
+
+
+class TestRequestReviewStreamFailure:
+    def test_stream_failure_routes_through_classify_without_retry(self, monkeypatch):
+        agent = _StreamFailureAgent()
+
+        def fake_run(argv, **kwargs):
+            import subprocess
+
+            return subprocess.CompletedProcess(
+                args=argv, returncode=0, stdout="ignored", stderr=""
+            )
+
+        monkeypatch.setattr("agent_review.subprocess.run", fake_run)
+
+        with pytest.raises(OperationalError) as excinfo:
+            request_review(
+                agent,
+                prompt="p",
+                timeout_seconds=30,
+                resume_session_id=None,
+                add_dirs=[],
+            )
+
+        assert excinfo.value.reason == "auth_unavailable"
+        # No repair retry: extract_payload is called exactly once.
+        assert agent.payload_calls == 1

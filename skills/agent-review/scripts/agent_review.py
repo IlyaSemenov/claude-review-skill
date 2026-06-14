@@ -1,72 +1,83 @@
 #!/usr/bin/env python3
 """
-Run a structured Claude review for a concrete artifact.
+Run a structured peer review of a concrete artifact using a pluggable CLI agent.
+
+The orchestration here is agent-agnostic: it parses stdin, builds the review and
+repair prompts, owns the response schema and normalization, drives the retry
+loop, and emits the user-facing JSON contract. Everything CLI-specific lives in
+an adapter under `adapters/`, selected with `--agent`.
 """
 
 from __future__ import annotations
 
 import argparse
 import json
+import os
 import subprocess
 import sys
 import time
 from typing import Any
 
-RESPONSE_SCHEMA = {
-    "type": "object",
-    "additionalProperties": False,
-    "required": [
-        "verdict",
-        "issues",
-        "open_questions",
-        "loop_signal",
-        "approval_reason",
-    ],
-    "properties": {
-        "verdict": {
-            "type": "string",
-            "enum": ["approve", "needs_changes", "discuss"],
-        },
-        "issues": {
-            "type": "array",
-            "items": {
-                "type": "object",
-                "additionalProperties": False,
-                "required": ["id", "title", "severity", "recommendation", "rationale"],
-                "properties": {
-                    "id": {"type": "string", "minLength": 1},
-                    "title": {"type": "string", "minLength": 1},
-                    "severity": {
-                        "type": "string",
-                        "enum": ["low", "medium", "high"],
+from adapters import (
+    AgentInvocation,
+    AgentStreamError,
+    OperationalError,
+    ReviewAgent,
+    available_agents,
+    get_agent,
+)
+
+# Source of truth for the review contract. The JSON schema below is derived
+# from these so the enums and required keys cannot drift between the schema we
+# send to the agent and the validation we run on its response.
+OUTPUT_KEYS = (
+    "verdict",
+    "issues",
+    "open_questions",
+    "loop_signal",
+    "approval_reason",
+)
+ISSUE_KEYS = ("id", "title", "severity", "recommendation", "rationale")
+VERDICTS = ("approve", "needs_changes", "discuss")
+SEVERITIES = ("low", "medium", "high")
+
+
+def _build_response_schema() -> dict[str, Any]:
+    return {
+        "type": "object",
+        "additionalProperties": False,
+        "required": list(OUTPUT_KEYS),
+        "properties": {
+            "verdict": {"type": "string", "enum": list(VERDICTS)},
+            "issues": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "additionalProperties": False,
+                    "required": list(ISSUE_KEYS),
+                    "properties": {
+                        "id": {"type": "string", "minLength": 1},
+                        "title": {"type": "string", "minLength": 1},
+                        "severity": {"type": "string", "enum": list(SEVERITIES)},
+                        "recommendation": {"type": "string", "minLength": 1},
+                        "rationale": {"type": "string", "minLength": 1},
                     },
-                    "recommendation": {"type": "string", "minLength": 1},
-                    "rationale": {"type": "string", "minLength": 1},
                 },
             },
+            "open_questions": {
+                "type": "array",
+                "items": {"type": "string", "minLength": 1},
+            },
+            "loop_signal": {"type": "boolean"},
+            "approval_reason": {"type": "string"},
         },
-        "open_questions": {
-            "type": "array",
-            "items": {"type": "string", "minLength": 1},
-        },
-        "loop_signal": {"type": "boolean"},
-        "approval_reason": {"type": "string"},
-    },
-}
+    }
 
-OUTPUT_KEYS = tuple(RESPONSE_SCHEMA["required"])
-VERDICTS = {"approve", "needs_changes", "discuss"}
-SEVERITIES = {"low", "medium", "high"}
+
+RESPONSE_SCHEMA = _build_response_schema()
 DEFAULT_TIMEOUT_SECONDS = 600
 MAX_PARSE_ATTEMPTS = 2
-AGENT_RESPONSE_MARKER = "=== CLAUDE_REVIEW_AGENT_RESPONSE ==="
-
-
-class OperationalError(Exception):
-    def __init__(self, reason: str, message: str) -> None:
-        super().__init__(message)
-        self.reason = reason
-        self.message = message
+AGENT_RESPONSE_MARKER = "=== AGENT_REVIEW_RESPONSE ==="
 
 
 def parse_stdin_payload(payload: str) -> tuple[str, str | None]:
@@ -149,27 +160,9 @@ def looks_like_review_payload(value: Any) -> bool:
     return isinstance(value, dict) and all(key in value for key in OUTPUT_KEYS)
 
 
-def extract_session_id(data: Any) -> str | None:
-    if not isinstance(data, dict):
-        return None
-    value = data.get("session_id")
-    if isinstance(value, str) and value.strip():
-        return value.strip()
-    return None
-
-
-def extract_review_payload(data: Any) -> dict[str, Any]:
-    if not isinstance(data, dict):
-        raise ValueError("claude output is not a JSON object")
-    structured_output = data.get("structured_output")
-    if not isinstance(structured_output, dict):
-        raise ValueError("claude output is missing 'structured_output'")
-    return structured_output
-
-
 def normalize_review(payload: Any) -> dict[str, Any]:
     if not looks_like_review_payload(payload):
-        raise ValueError("Claude response does not match the expected review payload")
+        raise ValueError("Agent response does not match the expected review payload")
 
     verdict = payload["verdict"]
     if verdict not in VERDICTS:
@@ -220,22 +213,6 @@ def normalize_review(payload: Any) -> dict[str, Any]:
     }
 
 
-def extract_error_text(text: str) -> str:
-    stripped = text.strip()
-    if not stripped:
-        return ""
-    try:
-        parsed = json.loads(stripped)
-    except json.JSONDecodeError:
-        return stripped
-    if isinstance(parsed, dict):
-        for key in ("result", "error", "message"):
-            value = parsed.get(key)
-            if isinstance(value, str) and value.strip():
-                return value.strip()
-    return stripped
-
-
 def build_repair_prompt(parse_error: str) -> str:
     return "\n".join(
         [
@@ -247,47 +224,40 @@ def build_repair_prompt(parse_error: str) -> str:
     ) + "\n"
 
 
-def classify_claude_failure(completed: subprocess.CompletedProcess[str]) -> OperationalError:
-    stderr_text = extract_error_text(completed.stderr)
-    stdout_text = extract_error_text(completed.stdout)
-    message = stderr_text or stdout_text or "unknown error"
-    if "Not logged in" in message:
-        return OperationalError("auth_unavailable", message)
-    return OperationalError("claude_cli_failed", message)
-
-
-def run_claude(
+def run_agent(
+    agent: ReviewAgent,
     prompt: str,
     timeout_seconds: int,
     resume_session_id: str | None,
     add_dirs: list[str],
 ) -> str:
-    command = [
-        "claude",
-        "-p",
-        "--output-format",
-        "json",
-        "--json-schema",
-        json.dumps(RESPONSE_SCHEMA, separators=(",", ":")),
-    ]
-    for add_dir in add_dirs:
-        command.extend(["--add-dir", add_dir])
-    if resume_session_id:
-        command.extend(["--resume", resume_session_id])
-    completed = subprocess.run(
-        command,
-        input=prompt,
-        capture_output=True,
-        text=True,
-        timeout=timeout_seconds,
-        check=False,
+    invocation: AgentInvocation = agent.build_command(
+        schema=RESPONSE_SCHEMA,
+        resume_session_id=resume_session_id,
+        add_dirs=add_dirs,
     )
+    try:
+        completed = subprocess.run(
+            invocation.argv,
+            input=prompt,
+            capture_output=True,
+            text=True,
+            timeout=timeout_seconds,
+            check=False,
+        )
+    finally:
+        for path in invocation.cleanup_paths:
+            try:
+                os.unlink(path)
+            except OSError:
+                pass
     if completed.returncode != 0:
-        raise classify_claude_failure(completed)
+        raise agent.classify_failure(completed)
     return completed.stdout
 
 
 def request_review(
+    agent: ReviewAgent,
     prompt: str,
     timeout_seconds: int,
     resume_session_id: str | None,
@@ -302,9 +272,10 @@ def request_review(
     for attempt in range(1, MAX_PARSE_ATTEMPTS + 1):
         remaining = deadline - time.monotonic()
         if remaining <= 0:
-            raise subprocess.TimeoutExpired(cmd="claude", timeout=timeout_seconds)
+            raise subprocess.TimeoutExpired(cmd=agent.name, timeout=timeout_seconds)
 
-        raw_output = run_claude(
+        raw_output = run_agent(
+            agent,
             current_prompt,
             max(1, int(remaining)),
             current_resume_session_id,
@@ -312,22 +283,28 @@ def request_review(
         )
         last_raw_output = raw_output
 
-        data: Any = None
+        followup_session_id: str | None = None
         try:
-            data = json.loads(raw_output)
-            payload = extract_review_payload(data)
+            followup_session_id = agent.extract_session_id(raw_output)
+            payload = agent.extract_payload(raw_output)
             review = normalize_review(payload)
-            session_id = extract_session_id(data)
-            if session_id:
-                review["session_id"] = session_id
+            if followup_session_id:
+                review["session_id"] = followup_session_id
             return review
+        except AgentStreamError:
+            # The agent reported a failure in its output (and may have exited 0).
+            # This is operational, not a malformed-payload parse error: route it
+            # through classify_failure and stop — a repair retry is pointless.
+            completed = subprocess.CompletedProcess(
+                args=[agent.name], returncode=1, stdout=raw_output, stderr=""
+            )
+            raise agent.classify_failure(completed) from None
         except (json.JSONDecodeError, ValueError) as exc:
             last_error = str(exc)
 
         if attempt == MAX_PARSE_ATTEMPTS:
             break
 
-        followup_session_id = extract_session_id(data) if data is not None else None
         resume_for_retry = followup_session_id or current_resume_session_id
         if not resume_for_retry:
             break
@@ -335,13 +312,18 @@ def request_review(
         current_prompt = build_repair_prompt(last_error)
 
     raise RuntimeError(
-        "Claude returned malformed structured output after "
+        f"Agent '{agent.name}' returned malformed structured output after "
         f"{MAX_PARSE_ATTEMPTS} attempts: {last_error}\nRaw output:\n{last_raw_output}"
     )
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Run a structured Claude review.")
+    parser = argparse.ArgumentParser(description="Run a structured peer review with a CLI agent.")
+    parser.add_argument(
+        "--agent",
+        required=True,
+        help=f"Review agent to use ({', '.join(available_agents())}).",
+    )
     parser.add_argument("--iteration", type=int, required=True)
     parser.add_argument("--max-iterations", type=int, required=True)
     parser.add_argument("--resume-session-id")
@@ -384,6 +366,7 @@ def main() -> int:
     try:
         args = parse_args()
         validate_args(args)
+        agent = get_agent(args.agent)
     except OperationalError as exc:
         return emit_operational_error(exc)
 
@@ -410,7 +393,7 @@ def main() -> int:
 
     try:
         review = request_review(
-            prompt, args.timeout_seconds, args.resume_session_id, args.add_dir
+            agent, prompt, args.timeout_seconds, args.resume_session_id, args.add_dir
         )
     except OperationalError as exc:
         return emit_operational_error(exc)
@@ -418,12 +401,12 @@ def main() -> int:
         return emit_operational_error(
             OperationalError(
                 "timeout",
-                f"Claude review exceeded the configured timeout of {args.timeout_seconds} seconds.",
+                f"Agent '{args.agent}' review exceeded the configured timeout of {args.timeout_seconds} seconds.",
             ),
             timeout_seconds=args.timeout_seconds,
         )
     except RuntimeError as exc:
-        return emit_operational_error(OperationalError("claude_cli_failed", str(exc)))
+        return emit_operational_error(OperationalError("agent_cli_failed", str(exc)))
 
     json.dump(review, sys.stdout, indent=2)
     sys.stdout.write("\n")
