@@ -230,11 +230,15 @@ def run_agent(
     timeout_seconds: int,
     resume_session_id: str | None,
     add_dirs: list[str],
+    model: str | None,
+    reasoning: str | None,
 ) -> str:
     invocation: AgentInvocation = agent.build_command(
         schema=RESPONSE_SCHEMA,
         resume_session_id=resume_session_id,
         add_dirs=add_dirs,
+        model=model,
+        reasoning=reasoning,
     )
     try:
         completed = subprocess.run(
@@ -262,6 +266,8 @@ def request_review(
     timeout_seconds: int,
     resume_session_id: str | None,
     add_dirs: list[str],
+    model: str | None = None,
+    reasoning: str | None = None,
 ) -> dict[str, Any]:
     deadline = time.monotonic() + timeout_seconds
     last_raw_output = ""
@@ -280,6 +286,8 @@ def request_review(
             max(1, int(remaining)),
             current_resume_session_id,
             add_dirs,
+            model,
+            reasoning,
         )
         last_raw_output = raw_output
 
@@ -323,6 +331,14 @@ def parse_args() -> argparse.Namespace:
         "--agent",
         required=True,
         help=f"Review agent to use ({', '.join(available_agents())}).",
+    )
+    parser.add_argument(
+        "--model",
+        help="Model for the chosen agent (passed through to its CLI). Optional.",
+    )
+    parser.add_argument(
+        "--reasoning",
+        help="Reasoning/effort level for the chosen agent (passed through to its CLI). Optional.",
     )
     parser.add_argument("--iteration", type=int, required=True)
     parser.add_argument("--max-iterations", type=int, required=True)
@@ -393,7 +409,13 @@ def main() -> int:
 
     try:
         review = request_review(
-            agent, prompt, args.timeout_seconds, args.resume_session_id, args.add_dir
+            agent,
+            prompt,
+            args.timeout_seconds,
+            args.resume_session_id,
+            args.add_dir,
+            args.model,
+            args.reasoning,
         )
     except OperationalError as exc:
         return emit_operational_error(exc)

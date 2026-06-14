@@ -21,6 +21,8 @@ Available review agents (select with the required `--agent` flag):
 
 Each agent resumes its own session by id and returns structured JSON matching the same review schema. The `session_id` returned in one round must be passed back via `--resume-session-id` on the next round, with the same `--agent`.
 
+Optionally pick the agent's model and reasoning level with `--model` and `--reasoning`. Both are optional and independent — pass either, both, or neither. They are forwarded to the agent's CLI as-is (the accepted values differ per agent and are validated by the CLI, surfacing an `operational_error` if invalid). Pass the same values on every round.
+
 ## Workflow
 
 0. Choose the review agent.

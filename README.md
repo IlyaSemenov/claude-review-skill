@@ -27,7 +27,7 @@ Use $agent-review with claude on this plan.
 Use $agent-review with codex to review the changes in src/reviewer.py and tell me which objections you agree with.
 ```
 
-The same reviewer is used for every round of a review; a session belongs to one agent, so the loop does not switch agents midway.
+The same reviewer is used for every round of a review; a session belongs to one agent, so the loop does not switch agents midway. You can optionally ask for a specific model or reasoning level (e.g. "review with codex on gpt-5.5, high reasoning") — both are optional and forwarded to that agent's CLI.
 
 ## Requirements
 

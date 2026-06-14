@@ -207,7 +207,7 @@ class _StreamFailureAgent:
     def __init__(self):
         self.payload_calls = 0
 
-    def build_command(self, *, schema, resume_session_id, add_dirs):
+    def build_command(self, *, schema, resume_session_id, add_dirs, model, reasoning):
         return AgentInvocation(["true"])
 
     def extract_session_id(self, stdout):

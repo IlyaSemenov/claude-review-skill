@@ -37,6 +37,8 @@ class CodexAgent:
         schema: dict[str, Any],
         resume_session_id: str | None,
         add_dirs: list[str],
+        model: str | None,
+        reasoning: str | None,
     ) -> AgentInvocation:
         schema_file = tempfile.NamedTemporaryFile(
             mode="w", suffix=".json", prefix="agent_review_codex_schema_", delete=False
@@ -45,6 +47,13 @@ class CodexAgent:
             json.dump(schema, schema_file)
         finally:
             schema_file.close()
+
+        # Reasoning has no dedicated flag; codex exposes it as a config override.
+        model_opts: list[str] = []
+        if model:
+            model_opts.extend(["--model", model])
+        if reasoning:
+            model_opts.extend(["-c", f"model_reasoning_effort={reasoning}"])
 
         if resume_session_id:
             # `exec resume` does not accept --sandbox or --add-dir.
@@ -57,6 +66,7 @@ class CodexAgent:
                 "--output-schema",
                 schema_file.name,
                 "--skip-git-repo-check",
+                *model_opts,
                 "-",
             ]
         else:
@@ -69,6 +79,7 @@ class CodexAgent:
                 "--skip-git-repo-check",
                 "--sandbox",
                 "read-only",
+                *model_opts,
             ]
             for add_dir in add_dirs:
                 argv.extend(["--add-dir", add_dir])

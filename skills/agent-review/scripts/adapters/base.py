@@ -61,8 +61,15 @@ class ReviewAgent(Protocol):
         schema: dict[str, Any],
         resume_session_id: str | None,
         add_dirs: list[str],
+        model: str | None,
+        reasoning: str | None,
     ) -> "AgentInvocation":
-        """Return the argv (and any temp-file context) to run this round."""
+        """Return the argv (and any temp-file context) to run this round.
+
+        `model` and `reasoning` are passed through opaquely: the adapter maps
+        them onto its CLI's own flags (the values are validated by the CLI, not
+        here, because the accepted set differs per agent).
+        """
         ...
 
     def extract_payload(self, stdout: str) -> dict[str, Any]:

@@ -15,23 +15,49 @@ def _completed(returncode=1, stdout="", stderr=""):
     )
 
 
+def _build(resume_session_id=None, add_dirs=None, model=None, reasoning=None):
+    return ClaudeAgent().build_command(
+        schema=SCHEMA,
+        resume_session_id=resume_session_id,
+        add_dirs=add_dirs or [],
+        model=model,
+        reasoning=reasoning,
+    )
+
+
 class TestBuildCommand:
     def test_round_one(self):
-        inv = ClaudeAgent().build_command(
-            schema=SCHEMA, resume_session_id=None, add_dirs=[]
-        )
+        inv = _build()
         assert inv.argv[:2] == ["claude", "-p"]
         assert "--json-schema" in inv.argv
         assert "--resume" not in inv.argv
         assert inv.cleanup_paths == []
 
     def test_resume_and_add_dirs(self):
-        inv = ClaudeAgent().build_command(
-            schema=SCHEMA, resume_session_id="s1", add_dirs=["/tmp", "/var"]
-        )
+        inv = _build(resume_session_id="s1", add_dirs=["/tmp", "/var"])
         assert "--resume" in inv.argv
         assert inv.argv[inv.argv.index("--resume") + 1] == "s1"
         assert inv.argv.count("--add-dir") == 2
+
+    def test_no_model_or_reasoning_by_default(self):
+        inv = _build()
+        assert "--model" not in inv.argv
+        assert "--effort" not in inv.argv
+
+    def test_model_only(self):
+        inv = _build(model="claude-opus-4-8")
+        assert inv.argv[inv.argv.index("--model") + 1] == "claude-opus-4-8"
+        assert "--effort" not in inv.argv
+
+    def test_reasoning_only_maps_to_effort(self):
+        inv = _build(reasoning="high")
+        assert inv.argv[inv.argv.index("--effort") + 1] == "high"
+        assert "--model" not in inv.argv
+
+    def test_model_and_reasoning_together(self):
+        inv = _build(model="claude-sonnet-4-6", reasoning="medium")
+        assert inv.argv[inv.argv.index("--model") + 1] == "claude-sonnet-4-6"
+        assert inv.argv[inv.argv.index("--effort") + 1] == "medium"
 
 
 class TestExtractPayload:

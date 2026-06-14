@@ -23,6 +23,8 @@ class ClaudeAgent:
         schema: dict[str, Any],
         resume_session_id: str | None,
         add_dirs: list[str],
+        model: str | None,
+        reasoning: str | None,
     ) -> AgentInvocation:
         argv = [
             "claude",
@@ -32,6 +34,11 @@ class ClaudeAgent:
             "--json-schema",
             json.dumps(schema, separators=(",", ":")),
         ]
+        if model:
+            argv.extend(["--model", model])
+        if reasoning:
+            # Claude exposes reasoning level as --effort.
+            argv.extend(["--effort", reasoning])
         for add_dir in add_dirs:
             argv.extend(["--add-dir", add_dir])
         if resume_session_id:

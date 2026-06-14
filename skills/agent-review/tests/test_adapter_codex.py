@@ -1,3 +1,4 @@
+import contextlib
 import json
 import os
 import subprocess
@@ -54,12 +55,33 @@ def _completed(returncode=0, stdout="", stderr=""):
     )
 
 
+@contextlib.contextmanager
+def _build(resume_session_id=None, add_dirs=None, model=None, reasoning=None):
+    inv = CodexAgent().build_command(
+        schema=SCHEMA,
+        resume_session_id=resume_session_id,
+        add_dirs=add_dirs or [],
+        model=model,
+        reasoning=reasoning,
+    )
+    try:
+        yield inv
+    finally:
+        for path in inv.cleanup_paths:
+            if os.path.exists(path):
+                os.unlink(path)
+
+
+def _reasoning_override(argv):
+    for i, tok in enumerate(argv):
+        if tok == "-c" and argv[i + 1].startswith("model_reasoning_effort="):
+            return argv[i + 1].split("=", 1)[1]
+    return None
+
+
 class TestBuildCommand:
     def test_round_one_includes_sandbox_and_schema_file(self):
-        inv = CodexAgent().build_command(
-            schema=SCHEMA, resume_session_id=None, add_dirs=[]
-        )
-        try:
+        with _build() as inv:
             assert inv.argv[:2] == ["codex", "exec"]
             assert "resume" not in inv.argv
             assert "--sandbox" in inv.argv
@@ -69,37 +91,41 @@ class TestBuildCommand:
             assert schema_path in inv.cleanup_paths
             with open(schema_path) as fh:
                 assert json.load(fh) == SCHEMA
-        finally:
-            for path in inv.cleanup_paths:
-                if os.path.exists(path):
-                    os.unlink(path)
 
     def test_round_one_add_dirs(self):
-        inv = CodexAgent().build_command(
-            schema=SCHEMA, resume_session_id=None, add_dirs=["/tmp"]
-        )
-        try:
+        with _build(add_dirs=["/tmp"]) as inv:
             assert inv.argv.count("--add-dir") == 1
-        finally:
-            for path in inv.cleanup_paths:
-                if os.path.exists(path):
-                    os.unlink(path)
 
     def test_resume_drops_sandbox(self):
-        inv = CodexAgent().build_command(
-            schema=SCHEMA, resume_session_id="sid-1", add_dirs=["/tmp"]
-        )
-        try:
+        with _build(resume_session_id="sid-1", add_dirs=["/tmp"]) as inv:
             assert inv.argv[:3] == ["codex", "exec", "resume"]
             assert inv.argv[3] == "sid-1"
             # resume does not accept --sandbox or --add-dir
             assert "--sandbox" not in inv.argv
             assert "--add-dir" not in inv.argv
             assert inv.argv[-1] == "-"
-        finally:
-            for path in inv.cleanup_paths:
-                if os.path.exists(path):
-                    os.unlink(path)
+
+    def test_no_model_or_reasoning_by_default(self):
+        with _build() as inv:
+            assert "--model" not in inv.argv
+            assert _reasoning_override(inv.argv) is None
+
+    def test_model_only(self):
+        with _build(model="gpt-5.5") as inv:
+            assert inv.argv[inv.argv.index("--model") + 1] == "gpt-5.5"
+            assert _reasoning_override(inv.argv) is None
+
+    def test_reasoning_only_maps_to_config_override(self):
+        with _build(reasoning="medium") as inv:
+            assert _reasoning_override(inv.argv) == "medium"
+            assert "--model" not in inv.argv
+
+    def test_model_and_reasoning_in_resume(self):
+        with _build(resume_session_id="sid-1", model="gpt-5.5", reasoning="high") as inv:
+            assert inv.argv[inv.argv.index("--model") + 1] == "gpt-5.5"
+            assert _reasoning_override(inv.argv) == "high"
+            # still ends with the stdin marker
+            assert inv.argv[-1] == "-"
 
 
 class TestExtractPayload:
