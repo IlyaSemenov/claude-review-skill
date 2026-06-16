@@ -82,7 +82,14 @@ If the helper returns `{"kind":"operational_error","reason":"auth_unavailable",.
    Accept useful criticism and update the artifact.
    Reject criticism that is mistaken, overspecified, or based on a wrong assumption.
    Do not defer to the agent just because it sounds confident.
-   After each round, print a short progress update to the user. Format: one line per issue the agent raised this round, in the form `<short title> — accepted/fixed` or `<short title> — rejected: <one-line reason>`. Keep titles short; do not paste full rationales. If the agent raised no issues this round, say so on a single line.
+   After each round, print a short progress update to the user.
+   Use one line per issue the agent raised this round, in the form `<concrete problem summary> — accepted/fixed: <what changed>` or `<concrete problem summary> — rejected: <one-line reason>`.
+   Do not reuse the reviewer's raw title unless it already describes the problem clearly to a project maintainer.
+   Rewrite vague titles into a concrete maintainer-facing problem statement: what is wrong, where it is wrong, and why it matters.
+   Bad: `Auto trigger docs — fixed`.
+   Good: `The auto-mode docs said UserInfo is fetched only when email is missing, but the implementation also fetches it when email_verified is missing — fixed: updated the docs to match the code`.
+   Keep each line concise; do not paste full rationales.
+   If the agent raised no issues this round, say so on a single line.
    Internally, track every issue across rounds by its `id` so the final report can reconcile outcomes — the `id` is for your bookkeeping only and should not appear in user-facing lines.
 5. When you disagree, prepare a response bundle for the next round.
    Include only:
@@ -95,7 +102,9 @@ If the helper returns `{"kind":"operational_error","reason":"auth_unavailable",.
    - the same disagreement repeats after a substantive rebuttal
    - total iterations reaches 10
 7. End with a final report to the user.
-   Collect every issue the agent raised across all rounds, deduplicated by `id`, and group them. Use one line per issue (short title + one-line outcome note); do not include the raw `id` in user-facing lines. Omit any group that is empty — do not emit a placeholder.
+   Collect every issue the agent raised across all rounds, deduplicated by `id`, and group them.
+   Use one line per issue (`<concrete problem summary> — <one-line outcome note>`); do not include the raw `id` in user-facing lines.
+   Omit any group that is empty — do not emit a placeholder.
    - **Fixed** — issues you accepted at any point (immediately or after discussion) and applied to the artifact.
    - **Rejected, agent withdrew** — issues you initially disagreed with and the agent dropped after your rebuttal (they did not resurface in later rounds).
    - **Unresolved** — issues where the agent still insisted and you still disagreed when the loop ended. These are what the user needs to judge.
