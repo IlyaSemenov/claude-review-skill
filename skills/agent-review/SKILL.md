@@ -40,11 +40,14 @@ Optionally pick the agent's model and reasoning level with `--model` and `--reas
    For non-materialized plans or discussions, either pipe the text directly or, for larger subjects, materialize them to `/tmp/...md` and refer to the path instead.
    For round 2 and later, append your response bundle after an `=== AGENT_REVIEW_RESPONSE ===` marker on its own line in the same stdin payload.
 3. Run the helper script.
+   Resolve the absolute path to this skill directory (the directory containing this `SKILL.md`) and call it `SKILL_DIR`.
+   Keep your shell working directory in the repository being reviewed; do not `cd` into the skill directory.
+   Invoke the helper by absolute path from `SKILL_DIR`, not as a path relative to the reviewed repository.
 
 Round 1 — only the review input, no marker:
 
 ```bash
-cat <<'EOF' | python3 scripts/agent_review.py \
+cat <<'EOF' | python3 "$SKILL_DIR/scripts/agent_review.py" \
   --agent claude \
   --iteration 1 \
   --max-iterations 10
@@ -55,7 +58,7 @@ EOF
 Round 2+ — resume the session and append your response bundle after the marker on its own line:
 
 ```bash
-cat <<'EOF' | python3 scripts/agent_review.py \
+cat <<'EOF' | python3 "$SKILL_DIR/scripts/agent_review.py" \
   --agent claude \
   --iteration 2 \
   --max-iterations 10 \
