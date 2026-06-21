@@ -53,9 +53,21 @@ Each adapter implements (see `base.py`):
   stable `reason` (`auth_unavailable` / `agent_cli_failed` / `invalid_input`).
 
 The core never reads stdin, builds prompts, or normalizes payloads — that all
-stays in `agent_review.py`. If a new agent tempts you to add an `if agent ==`
-branch to the core, that's a signal the abstraction is leaking; push it into the
-adapter or into a constants-derived, all-agents prompt addition instead.
+stays in `agent_review.py`. If a new *reviewer* agent tempts you to add an
+`if agent ==` branch to the core, that's a signal the abstraction is leaking;
+push it into the adapter or into a constants-derived, all-agents prompt addition
+instead.
+
+### Host-environment optimizations are allowed
+
+The `if agent ==` rule above is about the **reviewer** CLIs. It does not forbid
+tuning for the **host environment** that runs the skill (the calling agent, its
+sandbox, its background model) — a local optimization for a known host is fine
+when it: stays isolated (host *guidance* in its own doc next to `SKILL.md` like
+`claude-code.md`; host *code* behind one clearly-named branch), is documented as
+host-specific, and leaves the agnostic default correct for every other host. One
+that can't (changes the default, or smears `if host ==` across the core) is a
+leak — rework it, or keep it as guidance only.
 
 ## Adding a new adapter
 
@@ -116,12 +128,20 @@ Notes that bit us:
 
 ## Debugging gotchas
 
-- **Sandbox hangs.** codex and opencode hang for minutes when run inside the
-  default execution sandbox; they work instantly with escalated execution. This
-  is the same root cause behind the `auth_unavailable` guidance in SKILL.md —
-  when a CLI seems stuck or "not logged in" under sandboxing, rerun escalated
-  before concluding anything about the wrapper or auth. (claude was not observed
-  to hang.)
+- **Host under a sandbox → `auth_unavailable`.** When the *host* agent runs the
+  helper under its harness sandbox, the reviewer CLI may not reach its login even
+  though the same CLI works in a normal shell, surfacing as `auth_unavailable`
+  (or, with a CLI that swallows the auth error, a stuck run). This is the host's
+  axis, not a reviewer bug: the host should rerun the helper with escalated
+  execution before concluding the user is logged out.
+- **opencode reviewer backgrounded → false `timeout`.** opencode is itself an
+  agent and stalls when its own tool steps can't complete in a non-interactive
+  launch; the wrapper then reports a `timeout` for a review opencode would finish
+  in ~30–60s in the foreground. Reproduced with no sandbox involved (identical
+  `subprocess.run` returns in ~13s foreground, times out backgrounded). The fix
+  is to run the helper in the foreground — see `skills/agent-review/claude-code.md`.
+  (Not observed with codex, which completed backgrounded; don't assume it
+  generalizes to every reviewer.)
 - **Dogfood new adapters** by running the skill on its own diff with another
   agent. It has repeatedly found real bugs (the `AgentStreamError` routing, the
   `add_dirs` false-review) that unit tests didn't.
@@ -131,6 +151,9 @@ Notes that bit us:
 - SKILL.md is an instruction for the *agent running the skill*; keep it to what
   drives action. Design rationale ("fails fast rather than…") belongs in code
   comments / PRs, not in SKILL.md.
+- Host-specific guidance goes in its own doc next to SKILL.md (e.g.
+  `claude-code.md`), not in SKILL.md itself — SKILL.md stays host-agnostic and
+  links to it. Keep these short: the rule plus a one-line why, not a writeup.
 - The agent list in SKILL.md is a uniform registry: identifier + human name +
   auth requirement, nothing else. Per-agent quirks (no schema enforcement,
   `--model` value format) live in the general paragraphs where they're used, not

@@ -76,7 +76,7 @@ EOF
 If your stdin references files outside the current working directory, pass `--add-dir` for each extra readable directory, for example `--add-dir /tmp`. Not supported by `--agent opencode` (it can only read its working tree), so keep opencode review material in-tree.
 The helper defaults to a 600-second wall-clock budget for the whole round (including any JSON-repair retry). For unusually large reviews, pass `--timeout-seconds` to raise or lower that bound.
 
-If the helper returns `{"kind":"operational_error","reason":"auth_unavailable",...}`, do not assume the user is actually logged out. In sandboxed environments, treat sandbox isolation as the likely cause and rerun the helper command with escalated execution before concluding that the agent's authentication is unavailable.
+An `operational_error` may describe how you launched the helper rather than the review itself, so don't take these two at face value: a `reason:"auth_unavailable"` when you ran under a sandbox that blocks the reviewer's login (rerun with escalated execution before concluding the user is logged out), and a `reason:"timeout"` when you ran the helper non-interactively, e.g. in the background (rerun in the foreground before concluding the reviewer was slow). Rerun the exact same helper command.
 
 4. Read the agent's structured output and decide point by point.
    Accept useful criticism and update the artifact.
@@ -129,11 +129,12 @@ If the helper returns `{"kind":"operational_error", ...}`, do not start or conti
 
 ## Guidance
 
-- This skill cannot bypass permissions by itself. The Python helper only invokes the selected agent CLI. When sandboxed execution cannot access the agent's login, request escalation for the helper command instead of debugging the wrapper first.
+- This skill cannot bypass permissions by itself. The Python helper only invokes the selected agent CLI. When the environment breaks the helper (see the false-failure note above), fix how the helper is launched instead of debugging the wrapper first.
+- Host-agent-specific guidance lives next to this file. If you are Claude Code, read [claude-code.md](claude-code.md) for how to run the helper under this harness (foreground vs background, escalation) — it prevents the false-timeout failure mode.
 - Use `--resume-session-id` for every round after the first, with the same `--agent`. If the session is lost, start a new review session instead of trying to reconstruct it from pasted prior feedback.
 - Prefer file-path references for repo-backed subjects, and a `git diff` instruction for changes, over pasting raw content. The reviewer can read the tree and run git itself; reserve inline text for short non-file material, and a temp file only for larger plans or discussions that aren't already in the tree.
 - Re-send the full current review input every round even when resuming. The resumed session remembers the conversation, but the current review input is still the authoritative review target.
-- Long-running reviews are normal. Lack of intermediate output is not a failure by itself unless the helper exits or the configured timeout is hit.
+- Long-running reviews are normal. Lack of intermediate output is not a failure by itself unless the helper exits with an `operational_error` (and a `timeout` may be false — see the note above).
 - Keep the review input specific. State what to review and what kind of review you want: missing decisions, correctness risks, scope control, code quality, or implementation gaps.
 - Use later rounds to defend the artifact when you believe the agent is wrong. Consensus is useful, but not mandatory.
 - A rejected point becomes unresolved only if the loop ends while the agent still insists on it.
