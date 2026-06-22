@@ -10,7 +10,7 @@ argument-hint: <claude|codex|opencode> [what to review]
 
 Use a peer CLI agent as a reviewer, not as the authority. The goal is to surface blind spots, challenge weak reasoning, and tighten the artifact under review while keeping you responsible for the final judgment.
 
-The reviewer is pluggable. You must select one with the required `--agent` flag — for example `--agent claude`, `--agent codex`, or `--agent opencode`. The workflow below is identical regardless of agent — only the `--agent` value and that agent's authentication requirement change.
+The reviewer is pluggable. You must select one with the required `--agent` flag — for example `--agent claude`, `--agent codex`, or `--agent opencode`. The workflow is identical regardless of agent.
 
 ## Agents
 
@@ -44,6 +44,7 @@ If your host has no doc here, run the helper as written and treat any `operation
    Outside Plan Mode, review only a clearly identified subject from context, such as a diff, design note, issue summary, code snippet, or one or more project files.
    If multiple targets are plausible or the request is underspecified, stop and ask what the agent should review.
 2. Prepare the review input you will pipe to stdin. The reviewer runs in your working tree — describe what to review and let it gather the material; do not pre-materialize what it can read itself.
+   Keep it specific: state both what to review and what kind of review you want — missing decisions, correctness risks, scope control, code quality, or implementation gaps.
    For uncommitted or branch changes, instruct the reviewer to run the diff itself rather than capturing and pasting one. Name the exact command and the focus, e.g. `Review the changes from \`git diff\` — focus on the retry logic in src/reviewer.py` or `Review \`git diff main...HEAD\`, all files`. Paste a captured diff only when the reviewer can't reproduce it from the tree (e.g. a remote PR or patch not checked out locally).
    For project files in the current working directory, prefer path-based review input such as `Review src/auth.py lines 40-110`.
    For non-materialized plans or discussions, either pipe the text directly or, for larger subjects, materialize them to `/tmp/...md` and refer to the path instead.
@@ -82,15 +83,16 @@ EOF
 `--agent` is required on every round (round 1 and all resumes); use `--agent codex` to review with Codex instead.
 
 `$SESSION_ID` is the `session_id` from the previous round's JSON output. Keep using the same `--agent` across rounds — a session id from one agent is not valid for another.
+If the session is lost, start a new review session rather than reconstructing it from pasted prior feedback.
 If your stdin references files outside the current working directory, pass `--add-dir` for each extra readable directory, for example `--add-dir /tmp`. Not supported by `--agent opencode` (it can only read its working tree), so keep opencode review material in-tree.
 The helper defaults to a 600-second wall-clock budget for the whole round (including any JSON-repair retry). For unusually large reviews, pass `--timeout-seconds` to raise or lower that bound.
 
-An `operational_error` may describe how you launched the helper rather than the review itself, so don't take these two at face value: a `reason:"auth_unavailable"` when you ran under a sandbox that blocks the reviewer's login (rerun with escalated execution before concluding the user is logged out), and a `reason:"timeout"` when you ran the helper non-interactively, e.g. in the background (rerun in the foreground before concluding the reviewer was slow). Rerun the exact same helper command.
+An `operational_error` may describe how you launched the helper rather than the review itself, so don't take these two at face value: a `reason:"auth_unavailable"` when you ran under a sandbox that blocks the reviewer's login (rerun with escalated execution before concluding the user is logged out), and a `reason:"timeout"` when you ran the helper non-interactively, e.g. in the background (rerun in the foreground before concluding the reviewer was slow). Rerun the exact same helper command — fix how it is launched, not the helper: it only invokes the agent CLI and cannot bypass the environment's auth or permissions.
 
 4. Read the agent's structured output and decide point by point.
+   You are the final judge: a confident tone is not a reason to defer, and reaching consensus is not required.
    Accept useful criticism and update the artifact.
    Reject criticism that is mistaken, overspecified, or based on a wrong assumption.
-   Do not defer to the agent just because it sounds confident.
    After each round, print a short progress update to the user.
    Use one line per issue the agent raised this round, in the form `<concrete problem summary> — accepted/fixed: <what changed>` or `<concrete problem summary> — rejected: <one-line reason>`.
    Do not reuse the reviewer's raw title unless it already describes the problem clearly to a project maintainer.
@@ -104,7 +106,6 @@ An `operational_error` may describe how you launched the helper rather than the 
    Include only:
    - accepted points and what changed
    - rejected points and why
-   Keep the tone direct and technical.
    Re-send the full current review input every round. Resume preserves discussion state, not the latest ground-truth subject.
 6. Repeat until one of these is true:
    - the agent approves or has no actionable issues
@@ -135,17 +136,6 @@ An `operational_error` may describe how you launched the helper rather than the 
    ```
 
 If the helper returns `{"kind":"operational_error", ...}`, do not start or continue iterations. Report that review was not possible, show the reason and message, and stop.
-
-## Guidance
-
-- This skill cannot bypass permissions by itself. The Python helper only invokes the selected agent CLI. When the environment breaks the helper (see the false-failure note above), fix how the helper is launched instead of debugging the wrapper first.
-- Use `--resume-session-id` for every round after the first, with the same `--agent`. If the session is lost, start a new review session instead of trying to reconstruct it from pasted prior feedback.
-- Prefer file-path references for repo-backed subjects, and a `git diff` instruction for changes, over pasting raw content. The reviewer can read the tree and run git itself; reserve inline text for short non-file material, and a temp file only for larger plans or discussions that aren't already in the tree.
-- Re-send the full current review input every round even when resuming. The resumed session remembers the conversation, but the current review input is still the authoritative review target.
-- Long-running reviews are normal. Lack of intermediate output is not a failure by itself unless the helper exits with an `operational_error` (and a `timeout` may be false — see the note above).
-- Keep the review input specific. State what to review and what kind of review you want: missing decisions, correctness risks, scope control, code quality, or implementation gaps.
-- Use later rounds to defend the artifact when you believe the agent is wrong. Consensus is useful, but not mandatory.
-- A rejected point becomes unresolved only if the loop ends while the agent still insists on it.
 
 ## Script Output
 

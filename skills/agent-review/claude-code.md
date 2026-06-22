@@ -1,6 +1,6 @@
 # Running agent-review under Claude Code
 
-Host-agent notes for Claude Code; read alongside `SKILL.md`.
+Apply these rules only when you (the host agent) are Claude Code.
 
 ## Always run the helper in the foreground
 
