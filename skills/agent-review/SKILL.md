@@ -43,18 +43,20 @@ If your host has no doc here, run the helper as written and treat any `operation
    In Plan Mode, use the current plan text as the subject.
    Outside Plan Mode, review only a clearly identified subject from context, such as a diff, design note, issue summary, code snippet, or one or more project files.
    If multiple targets are plausible or the request is underspecified, stop and ask what the agent should review.
-2. Prepare the review input you will pipe to stdin. The reviewer runs in your working tree — describe what to review and let it gather the material; do not pre-materialize what it can read itself.
-   Keep it specific: state both what to review and what kind of review you want — missing decisions, correctness risks, scope control, code quality, or implementation gaps.
+2. Prepare the stdin payload for this round.
+   Round 1 stdin is the review subject.
+   The reviewer runs in your working tree — describe what to review and let it gather the material; do not pre-materialize what it can read itself.
+   Keep the subject specific: state both what to review and what kind of review you want — missing decisions, correctness risks, scope control, code quality, or implementation gaps.
    For uncommitted or branch changes, instruct the reviewer to run the diff itself rather than capturing and pasting one. Name the exact command and the focus, e.g. `Review the changes from \`git diff\` — focus on the retry logic in src/reviewer.py` or `Review \`git diff main...HEAD\`, all files`. Paste a captured diff only when the reviewer can't reproduce it from the tree (e.g. a remote PR or patch not checked out locally).
    For project files in the current working directory, prefer path-based review input such as `Review src/auth.py lines 40-110`.
    For non-materialized plans or discussions, either pipe the text directly or, for larger subjects, materialize them to `/tmp/...md` and refer to the path instead.
-   For round 2 and later, append your response bundle after an `=== AGENT_REVIEW_RESPONSE ===` marker on its own line in the same stdin payload.
+   Round 2+ stdin is normally only your response bundle; the resumed session already has the prior subject and discussion.
 3. Run the helper script.
    Resolve the absolute path to this skill directory (the directory containing this `SKILL.md`) and call it `SKILL_DIR`.
    Keep your shell working directory in the repository being reviewed; do not `cd` into the skill directory.
    Invoke the helper by absolute path from `SKILL_DIR`, not as a path relative to the reviewed repository.
 
-Round 1 — only the review input, no marker:
+Round 1 — review subject:
 
 ```bash
 cat <<'EOF' | python3 "$SKILL_DIR/scripts/agent_review.py" \
@@ -65,7 +67,7 @@ Review docs/plan.md and src/reviewer.py. Focus on missing decisions and retry be
 EOF
 ```
 
-Round 2+ — resume the session and append your response bundle after the marker on its own line:
+Round 2+ — resume the session and send only your response bundle:
 
 ```bash
 cat <<'EOF' | python3 "$SKILL_DIR/scripts/agent_review.py" \
@@ -73,8 +75,6 @@ cat <<'EOF' | python3 "$SKILL_DIR/scripts/agent_review.py" \
   --iteration 2 \
   --max-iterations 10 \
   --resume-session-id "$SESSION_ID"
-Review docs/plan.md and src/reviewer.py. Focus on missing decisions and retry behavior.
-=== AGENT_REVIEW_RESPONSE ===
 Accepted: added retry-with-backoff to publish() (issue r1).
 Rejected: issue r2 — the caller already holds the lock, so the extra mutex is redundant.
 EOF
@@ -106,7 +106,15 @@ An `operational_error` may describe how you launched the helper rather than the 
    Include only:
    - accepted points and what changed
    - rejected points and why
-   Re-send the full current review input every round. Resume preserves discussion state, not the latest ground-truth subject.
+   Do not re-send the full original review input.
+   If the reviewer also needs new scope, a new constraint, or an explicit file-inspection instruction, split the payload like this:
+
+   ```text
+   Now also review error handling in src/db.py.
+   === AGENT_REVIEW_RESPONSE ===
+   Accepted: fixed r1.
+   Rejected: r2 is out of scope because ...
+   ```
 6. Repeat until one of these is true:
    - the agent approves or has no actionable issues
    - the same disagreement repeats after a substantive rebuttal

@@ -80,7 +80,7 @@ MAX_PARSE_ATTEMPTS = 2
 AGENT_RESPONSE_MARKER = "=== AGENT_REVIEW_RESPONSE ==="
 
 
-def parse_stdin_payload(payload: str) -> tuple[str, str | None]:
+def parse_stdin_payload(payload: str) -> tuple[str | None, str | None]:
     stripped = payload.strip()
     if not stripped:
         raise ValueError(
@@ -102,25 +102,20 @@ def parse_stdin_payload(payload: str) -> tuple[str, str | None]:
 
     review_input = "\n".join(lines[:marker_index]).strip()
     agent_response = "\n".join(lines[marker_index + 1 :]).strip()
-    if not review_input:
-        raise ValueError(
-            "Sectioned stdin payload must include review input before "
-            f"{AGENT_RESPONSE_MARKER}."
-        )
-    return review_input, (agent_response or None)
+    return (review_input or None), (agent_response or None)
 
 
 def build_prompt(
     *,
     iteration: int,
     max_iterations: int,
-    review_input: str,
+    review_input: str | None,
     agent_response: str | None,
 ) -> str:
     sections = [
         "You are reviewing the primary agent's work as a peer reviewer, not as the final authority.",
-        "Your job is to find blind spots, weak assumptions, correctness risks, or unnecessary complexity in the supplied review input.",
-        "The review input may contain inline material, file paths to inspect, or both. If it refers to files, read only the files needed for the review.",
+        "Your job is to find blind spots, weak assumptions, correctness risks, or unnecessary complexity in the supplied review material.",
+        "The review material may come from this prompt, the resumed session context, inline material, file paths to inspect, or a combination of those. If it refers to files, read only the files needed for the review.",
         "Do not rewrite the entire artifact. Focus on the few highest-value issues.",
         "It is acceptable that some of your concerns may be rejected. Do not force consensus if the artifact is defensible.",
         "",
@@ -138,11 +133,25 @@ def build_prompt(
             ]
         )
 
+    sections.append("")
+    if review_input is None:
+        sections.extend(
+            [
+                "No new review input was supplied this round.",
+                "Continue from the resumed session context and judge whether that response resolves your prior issues.",
+                "If the response claims files changed, inspect only the relevant current files or diff needed to verify those claims.",
+            ]
+        )
+    else:
+        sections.extend(
+            [
+                "Review input:",
+                review_input.rstrip(),
+            ]
+        )
+
     sections.extend(
         [
-            "",
-            "Review input:",
-            review_input.rstrip(),
             "",
             "Return a single JSON object only — no prose, no markdown fences.",
             "It must have exactly these keys:",
@@ -419,13 +428,17 @@ def main() -> int:
     except ValueError as exc:
         return emit_operational_error(OperationalError("invalid_input", str(exc)))
 
-    if args.iteration > 1 and agent_response is None:
+    if args.iteration == 1 and agent_response is not None:
         return emit_operational_error(
             OperationalError(
                 "invalid_input",
-                f"iteration > 1 requires an {AGENT_RESPONSE_MARKER} section in stdin.",
+                "iteration 1 accepts only review input, not a response bundle.",
             )
         )
+
+    if args.iteration > 1 and agent_response is None:
+        agent_response = review_input
+        review_input = None
 
     prompt = build_prompt(
         iteration=args.iteration,

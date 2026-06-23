@@ -1,4 +1,5 @@
 import os
+import sys
 
 import pytest
 
@@ -10,6 +11,7 @@ from agent_review import (
     build_repair_prompt,
     describe_schema,
     looks_like_review_payload,
+    main,
     normalize_review,
     parse_stdin_payload,
     request_review,
@@ -42,10 +44,11 @@ class TestParseStdinPayload:
         assert review_input == payload
         assert agent_response is None
 
-    def test_marker_with_empty_input_raises(self):
+    def test_marker_with_empty_input_is_response_only_resume(self):
         payload = f"{AGENT_RESPONSE_MARKER}\nAgent response"
-        with pytest.raises(ValueError, match="must include review input before"):
-            parse_stdin_payload(payload)
+        review_input, agent_response = parse_stdin_payload(payload)
+        assert review_input is None
+        assert agent_response == "Agent response"
 
     def test_marker_with_empty_response_collapses_to_none(self):
         payload = f"Review\n{AGENT_RESPONSE_MARKER}\n"
@@ -86,6 +89,175 @@ class TestBuildPrompt:
         assert "Round: 3 of 10" in prompt
         assert "Primary agent response" in prompt
         assert "Agent accepted r1." in prompt
+
+    def test_later_round_can_continue_without_new_review_input(self):
+        prompt = build_prompt(
+            iteration=3,
+            max_iterations=10,
+            review_input=None,
+            agent_response="Agent accepted r1.",
+        )
+        assert "No new review input was supplied this round." in prompt
+        assert "judge whether that response resolves your prior issues" in prompt
+        assert "response marker" not in prompt
+        assert "Review input:" not in prompt
+
+
+class TestMainInputValidation:
+    def test_later_round_with_marker_splits_new_input_and_response(
+        self, monkeypatch
+    ):
+        captured = {}
+
+        def fake_request_review(
+            agent,
+            prompt,
+            timeout_seconds,
+            resume_session_id,
+            add_dirs,
+            model=None,
+            reasoning=None,
+        ):
+            captured["prompt"] = prompt
+            return {
+                **_valid_payload(),
+                "session_id": "sid-1",
+                "resume_command": "fake resume sid-1",
+                "resume_cwd": os.getcwd(),
+            }
+
+        monkeypatch.setattr(
+            sys,
+            "argv",
+            [
+                "agent_review.py",
+                "--agent",
+                "fake",
+                "--iteration",
+                "2",
+                "--max-iterations",
+                "10",
+                "--resume-session-id",
+                "sid-1",
+            ],
+        )
+        monkeypatch.setattr("agent_review.get_agent", lambda _name: _SuccessAgent())
+        monkeypatch.setattr("agent_review.request_review", fake_request_review)
+        monkeypatch.setattr(
+            "sys.stdin.read",
+            lambda: (
+                "Now also review src/db.py.\n"
+                f"{AGENT_RESPONSE_MARKER}\n"
+                "Accepted: fixed r1."
+            ),
+        )
+
+        assert main() == 0
+        assert "Review input:" in captured["prompt"]
+        assert "Now also review src/db.py." in captured["prompt"]
+        assert "Primary agent response to your previous feedback:" in captured["prompt"]
+        assert "Accepted: fixed r1." in captured["prompt"]
+
+    def test_later_round_without_marker_treats_stdin_as_response(
+        self, monkeypatch
+    ):
+        captured = {}
+
+        def fake_request_review(
+            agent,
+            prompt,
+            timeout_seconds,
+            resume_session_id,
+            add_dirs,
+            model=None,
+            reasoning=None,
+        ):
+            captured["prompt"] = prompt
+            return {
+                **_valid_payload(),
+                "session_id": "sid-1",
+                "resume_command": "fake resume sid-1",
+                "resume_cwd": os.getcwd(),
+            }
+
+        monkeypatch.setattr(
+            sys,
+            "argv",
+            [
+                "agent_review.py",
+                "--agent",
+                "fake",
+                "--iteration",
+                "2",
+                "--max-iterations",
+                "10",
+                "--resume-session-id",
+                "sid-1",
+            ],
+        )
+        monkeypatch.setattr("agent_review.get_agent", lambda _name: _SuccessAgent())
+        monkeypatch.setattr("agent_review.request_review", fake_request_review)
+        monkeypatch.setattr("sys.stdin.read", lambda: "Accepted: fixed r1.")
+
+        assert main() == 0
+        assert "Primary agent response to your previous feedback:" in captured["prompt"]
+        assert "Accepted: fixed r1." in captured["prompt"]
+        assert "Review input:" not in captured["prompt"]
+
+    def test_iteration_one_rejects_response_only_payload(
+        self, monkeypatch, capsys
+    ):
+        monkeypatch.setattr(
+            sys,
+            "argv",
+            [
+                "agent_review.py",
+                "--agent",
+                "fake",
+                "--iteration",
+                "1",
+                "--max-iterations",
+                "10",
+            ],
+        )
+        monkeypatch.setattr("agent_review.get_agent", lambda _name: _SuccessAgent())
+        monkeypatch.setattr("sys.stdin.read", lambda: f"{AGENT_RESPONSE_MARKER}\nAccepted.")
+
+        exit_code = main()
+
+        assert exit_code == 1
+        captured = capsys.readouterr()
+        assert '"kind": "operational_error"' in captured.out
+        assert '"reason": "invalid_input"' in captured.out
+        assert "iteration 1 accepts only review input" in captured.out
+
+    def test_iteration_one_rejects_split_payload(self, monkeypatch, capsys):
+        monkeypatch.setattr(
+            sys,
+            "argv",
+            [
+                "agent_review.py",
+                "--agent",
+                "fake",
+                "--iteration",
+                "1",
+                "--max-iterations",
+                "10",
+            ],
+        )
+        monkeypatch.setattr("agent_review.get_agent", lambda _name: _SuccessAgent())
+        monkeypatch.setattr(
+            "sys.stdin.read",
+            lambda: f"Review src/auth.py\n{AGENT_RESPONSE_MARKER}\nAccepted.",
+        )
+
+        exit_code = main()
+
+        assert exit_code == 1
+        captured = capsys.readouterr()
+        assert '"kind": "operational_error"' in captured.out
+        assert '"reason": "invalid_input"' in captured.out
+        assert "iteration 1 accepts only review input" in captured.out
 
 
 def _valid_payload():
